@@ -1,0 +1,65 @@
+from fastapi import FastAPI, HTTPException
+import requests
+import os
+from transformers import GPT2Tokenizer, GPT2LMHeadModel
+
+app = FastAPI()
+
+# Function to fetch secret from Azure Key Vault using API
+def get_secret_from_key_vault(vault_url, secret_name, access_token):
+    headers = {
+        'Authorization': 'Bearer {}'.format(access_token),
+    }
+    url = '{}/secrets/{}'.format(vault_url, secret_name)
+    response = requests.get(url, headers=headers)
+    if response.status_code == 200:
+        return response.json()['value']
+    else:
+        raise HTTPException(status_code=response.status_code, detail="Failed to fetch secret from Key Vault")
+
+# Function to set environment variables
+def set_environment_variable(name, value):
+    os.environ[name] = value
+
+# Initialize GPT-2 tokenizer and model
+tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+model = GPT2LMHeadModel.from_pretrained("gpt2")
+
+@app.get("/set_environment_variable/{secret_name}")
+async def set_environment_variable_from_key_vault(secret_name: str):
+    # Retrieve Azure Key Vault URL and access token from environment variables
+    vault_url = os.getenv("AZURE_KEY_VAULT_URL")
+    access_token = os.getenv("AZURE_ACCESS_TOKEN")
+
+    if not vault_url or not access_token:
+        raise HTTPException(status_code=500, detail="Azure Key Vault URL or Access Token not set")
+
+    try:
+        # Fetch secret from Azure Key Vault using API
+        secret_value = get_secret_from_key_vault(vault_url, secret_name, access_token)
+        
+        # Set environment variable
+        set_environment_variable(secret_name, secret_value)
+        return {"message": "Environment variable set successfully"}
+    except HTTPException as e:
+        raise e
+
+# Example route to test if environment variable is set and generate text using LLM
+@app.get("/generate_text/{secret_name}")
+async def generate_text_with_llm(secret_name: str):
+    try:
+        # Check if environment variable is set
+        secret_value = os.environ.get(secret_name)
+        if not secret_value:
+            raise HTTPException(status_code=404, detail="Environment variable not set")
+
+        # Generate text using LLM
+        input_text = f"The secret value is: {secret_value}."
+        input_ids = tokenizer.encode(input_text, return_tensors="pt")
+        output = model.generate(input_ids, max_length=100, num_return_sequences=1, no_repeat_ngram_size=2)
+        generated_text = tokenizer.decode(output[0], skip_special_tokens=True)
+
+        return {"generated_text": generated_text}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Environment variable not set")
+
